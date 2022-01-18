@@ -1,2 +1,4 @@
 # paz-analysis
-ImageJ macros to analyze synaptic periactive zone architecture
+ImageJ macros and Python scripts to analyze synaptic periactive zone architecture
+
+Full documentation to follow.
