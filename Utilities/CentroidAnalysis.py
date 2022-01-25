@@ -18,13 +18,11 @@ import os
 from pathlib import Path
 import matplotlib
 import matplotlib.pyplot as plt
-from pointpats import distance_statistics, PointPattern, PointProcess
 import libpysal
 import numba
 import pointpats as pp
-from descartes import PolygonPatch
 import importlib
-fn='Z:/Current members/DelSignore/PAZ Organization Analysis Project/PAZ/SD555_MaxIP-Control/test/AnalysisVSD555_V151/Centroids/SD555_5mm_L2__2020_12_06__10_33_28_Out-1_MaxZ14-Z24__Centroids.csv'
+
 PATH='test'
 COLORS=['g', 'm', 'k', 'c']
 SPOTS=['.', '+', 'x']
@@ -32,7 +30,7 @@ SCALE=23.5641
 DTRANSFORM=False   #whether to transform d values by multiplying by density prior to averaging
 #CHANS=["Dyn", "BRP", "Nwk"]
 
-class MaternPointProcess(PointProcess):
+class MaternPointProcess(pp.PointProcess):
     """
     """
 
@@ -43,7 +41,7 @@ class MaternPointProcess(PointProcess):
         self.n = n
         self.scale = 1 # scaling to create buffer to manage edge effects
         self.samples = samples
-        self.parents = 2*n*scale*scale
+        self.parents = 2*n*self.scale*self.scale
         self.conditioning = conditioning
         
         lam = self.parents/window.area
@@ -57,7 +55,7 @@ class MaternPointProcess(PointProcess):
         if asPP:
             for sample in self.realizations:
                 points = self.realizations[sample]
-                self.realizations[sample] = PointPattern(points, window=self.window)
+                self.realizations[sample] = pp.PointPattern(points, window=self.window)
 
 
     def setup(self):
@@ -119,7 +117,7 @@ class MaternPointProcess(PointProcess):
         l, b, r, t = self.window.bbox
         x_buffer = int((r-l)*(self.scale-1)/2)
         y_buffer = int((t-b)*(self.scale-1)/2)
-        nparents = int(2*n*scale*scale)
+        nparents = int(2*n*self.scale*self.scale)
         
         # get parent points
         pxs = np.random.uniform(l-x_buffer, r+x_buffer, (nparents))
@@ -248,121 +246,122 @@ def plotG(obs, chan, pois=None, clust=None, spaced=None, savepath=None, flag="")
         plt.show()
 
 
-def runme(path):
-    fl=os.listdir(path)
-    allObsg={}
-    allPoisg={}
-    allClg={}
-    allSpg={}
-    allDens={}
+def analyzeCentroidFile(file, exp="NA", n=1):
+    filename = file.split("\\")[-1]
+    table=pd.read_csv(file)
+    table.columns = table.columns.str.split("_", expand=True)
+    chans = list(set(table.columns.get_level_values(0)))
+    # Combine centroids into one list to make alpha shape that describes them cumulatively
+    allcents = table.unstack()\
+        .unstack(level=1)\
+        .reset_index()\
+        .drop(["level_0", "level_1"], axis=1)\
+        .dropna()
     
-    for fn in fl:
-        print(fn)
-        # Make an image specific folder to store some data
-        imgfolder=os.path.join(path, Path(fn).stem)
-        if(os.path.isdir(imgfolder)==False):
-            os.mkdir(imgfolder)
-            
-        if(fn.endswith(".csv")):
-            mcents, gcents = importData(os.path.join(path, fn))
-            chans = mcents.keys()
-            
-            # Make sure each g function list has right number of slots
-            if not allObsg:
-                for c in chans:
-                    allObsg[c]=[]
-                    allPoisg[c]=[]
-                    allClg[c]=[]
-                    allSpg[c]=[]
-                    allDens[c]=[]
-                    
-            # Make combined list to generate alpha mask & convert to window
-            allcents=np.vstack([vals for vals in mcents.values()])
-            alpha_shape=libpysal.cg.alpha_shape_auto(allcents)
-            win=makeWindow(alpha_shape)
-            
-            # In img specific folder:
-            # Make a plot of alpha mask and points
-            # Make plot for each channel with model and observed g
-            
-            plotCentroids(mcents, alpha_shape, imgfolder)
-            
-            for i, (chan, centroids) in enumerate(mcents.items()):
-
-                # Generate poisson, clustered, and spaced distributions
-                area=alpha_shape.area
-                dens=len(centroids)/area
-                allDens[chan].append(dens)
-                poisson=pp.PoissonPointProcess(win, len(centroids), 1, asPP=True)
-                spaced = MaternPointProcess(win, len(centroids), 1, asPP=True)
-                clustered = pp.PoissonClusterPointProcess(win, 
-                                                          len(centroids), 
-                                                          int(len(centroids)**.5), 
-                                                          area/512, 1, 
-                                                          asPP=True
-                                                          )
-                
-                spcent=spaced.realizations[0]
-                clcent=clustered.realizations[0]
-                pscent=poisson.realizations[0]
-                
-                # Calculate g(d) for each distribution and plot
-                obsg=distance_statistics.G(pp.PointPattern(centroids), 40)
-                poisg=distance_statistics.G(pscent, 40)
-                clg=distance_statistics.G(clcent, 40)
-                spg=distance_statistics.G(spcent, 40)
-                
-                # Here multiply d by density. This transform seems to do a good job
-                # of reducing variability between NMJs
-                
-                obsgd=obsg.d*dens
-                poisd=poisg.d*dens
-                cld=clg.d*dens
-                spd=spg.d*dens
-                plotG(obsg, chan, poisg, clg, spg, savepath=imgfolder)
-                plt.clf()
-                
-                if(DTRANSFORM):
-                    allObsg[chan].append((obsgd, obsg.G))
-                    allPoisg[chan].append((poisd, poisg.G))
-                    allClg[chan].append((cld, clg.G))
-                    allSpg[chan].append((spd, spg.G))
-                else:
-                    allObsg[chan].append((obsg.d, obsg.G))
-                    allPoisg[chan].append((poisg.d, poisg.G))
-                    allClg[chan].append((clg.d, clg.G))
-                    allSpg[chan].append((spg.d, spg.G))
-                    
-    meanObs, meanPois, meanClg, meanSpg, meanDens = {}, {}, {}, {}, {}
-    
+    # Get merged alpha shape
+    alpha_shape=libpysal.cg.alpha_shape_auto(allcents.to_numpy())
+    win = makeWindow(alpha_shape)
+    allgs={}
     for c in chans:
-        # calculate the mean d and mean g for each set
-        meanObs[c]=np.mean(allObsg[c], 0).transpose()
-        meanPois[c]=np.mean(allPoisg[c], 0).transpose()
-        meanClg[c]=np.mean(allClg[c], 0).transpose()
-        meanSpg[c]=np.mean(allSpg[c], 0).transpose()
-        meanDens[c]=np.mean(allDens[c])
-        if DTRANSFORM:
-            dcorr=meanDens[c]
-        else:
-            dcorr=1
-        # store d and g as attributes to make compatible with plotG
-        # restore units of d to pixels, and scale to microns
-        meanObs[c] = type('obj', (object,), {'d' : meanObs[c][:,0]/dcorr/SCALE, 'G':meanObs[c][:,1]})
-        meanPois[c] = type('obj', (object,), {'d' : meanPois[c][:,0]/dcorr/SCALE, 'G':meanPois[c][:,1]})
-        meanClg[c] = type('obj', (object,), {'d' : meanClg[c][:,0]/dcorr/SCALE, 'G':meanClg[c][:,1]})
-        meanSpg[c] = type('obj', (object,), {'d' : meanSpg[c][:,0]/dcorr/SCALE, 'G':meanSpg[c][:,1]})
+        N = table[c].dropna().size//2
+        obs = pp.PointPattern(table[c].dropna().to_numpy())
+        poisson = pp.PoissonPointProcess(win, N, 1, asPP=True).realizations[0]
+        matern = MaternPointProcess(win, N, 1, asPP=True).realizations[0]
+        clustered = pp.PoissonClusterPointProcess(win, 
+                                              N, 
+                                              N/5, 
+                                              3, 
+                                              1, 
+                                              asPP=True
+                                              ).realizations[0]
+        obsg = pp.G(obs, 40)._stat
+        poisg = pp.G(poisson, 40)._stat
+        materng = pp.G(matern, 40)._stat
+        clustg = pp.G(clustered, 40)._stat
         
-        # Plot
-        plotG(meanObs[c], 
-              c, 
-              meanPois[c], 
-              meanClg[c], 
-              meanSpg[c], 
-              savepath=path, 
-              flag="_{}-Avg".format(c)
-              )
-        plt.clf()
-    
+        dists = {"obs":obsg, "poisson":poisg, "spaced":materng, "clustered":clustg}
+        
+        # Make a dictionary where each key is a "EXP_CHAN_TYPE_N" string
+        
+        gs = {f"{exp}_{c}_{key}_{n}":val for key, val in dists.items()}
+        allgs.update(gs)
+        
+    return pd.DataFrame(allgs)
 
-            
+
+def analyzeCentroidFolder(root_dir, version=216):
+    g_dfs=[]
+    # Get all folders containing centroid data
+    if(root_dir[-1] != os.path.sep):
+        root_dir += os.path.sep
+    exp_dirs = glob.glob(root_dir+"*/")
+    centroid_dirs = glob.glob(os.path.join(root_dir,"*/", f"*V{version}*/", "*Centroid*/"))
+    
+    # For each Experiment folder containing centroid data, iterate over csv files and analyze
+    print("Running:")
+    for c_dir in centroid_dirs:
+        files = glob.glob(os.path.join(c_dir, "*.csv"))
+        exp = c_dir.split("\\")[-2].split("_")[0]
+        for n, file in enumerate(files):
+            g_dfs.append(analyzeCentroidFile(file, exp=exp, n=n))
+            if (1+n)%25 == 0: print('*')
+            else: print('*', end='')
+    return pd.concat(g_dfs, axis=1)
+
+def organizeCentroidData(df):
+    ''' Take the output dataframe of analyzeCentroidFolder and organize/prep for plotting:
+    1. Create multi-index from compound column headings
+    2. Average individual images
+    3. clean up rogue columns
+    4. Melt to d (index), channel (Chan), and data type (Type)'''
+       
+    df.columns = df.columns.str.split("_", expand=True)
+    if ('Unnamed: 0', np.nan, np.nan,  np.nan) in df.columns:
+        df = df.drop(('Unnamed: 0', np.nan, np.nan,  np.nan), axis=1).reset_index(col_level=3)
+    else: df.reset_index(col_level=3)
+    df.columns.names = ["Exp", "Chan", "Type", "N"]
+    allCentGroup = df.groupby(axis=1, level=[1,2]).mean()
+    allCentGroup = allCentGroup.drop(('', ''), axis=1)
+    allCentMelt = allCentGroup.reset_index().melt(id_vars = 'index')
+    return allCentMelt
+
+
+def plotOverallMean(df, savepath=None):
+    sns.lineplot(data=df, x='index', y="value", hue="Type", ci="sd")
+    if savepath:
+        plt.savefig(savepath)
+
+
+def plotIndividualChannels(df, savepath=None):
+    # Plot one graph for each channel
+    #chans = list(set(df.Chan))
+    chans = ["BRP", "CLC", "DAP160", "NWK", "DYN", "FASII"]
+    rows, cols = 3,3
+    fig, axes = plt.subplots(rows, cols)
+    fig.suptitle("Centroid Spatial Patterning", fontsize=11)
+    plt.tight_layout()
+    ax_i=0
+    for row in range(rows):
+        for col in range(cols):
+            if ax_i<len(chans):
+                ax=axes[row, col]
+                show = chans[ax_i]
+                sns.lineplot(data=df.loc[df.Chan==show, :], x="index", y="value", hue="Type", 
+                                ci="sd", ax=ax)
+                ax.set_ylabel("")
+                ax.set_xlabel("")
+                ax.set_title(chans[ax_i])
+                ax.tick_params(axis='x', bottom=False, labelbottom=False)
+                ax.tick_params(axis='y', labelsize=10)
+                handles, labels = ax.get_legend_handles_labels()
+                ax.get_legend().remove()
+                ax_i+=1
+    plt.figlegend(handles, labels, bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
+
+    while ax_i < rows*cols:
+        ax=axes[ax_i//cols, ax_i%cols]
+        fig.delaxes(ax)
+        ax_i+=1
+    
+    if savepath:
+        plt.savefig(savepath)
