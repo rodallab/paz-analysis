@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import matplotlib
 import matplotlib.pyplot as plt
+import seaborn as sns
 import libpysal
 import numba
 import pointpats as pp
